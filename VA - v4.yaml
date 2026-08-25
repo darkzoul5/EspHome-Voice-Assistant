@@ -1242,7 +1242,11 @@ binary_sensor:
   - platform: gpio
     id: hardware_mute_switch
     internal: true
-    pin: GPIO20
+    pin:
+      number: GPIO20
+      mode:
+        input: true
+        pulldown: true
     on_press:
       # Play mute on sound only if software mute isn't enabled
       - if:
