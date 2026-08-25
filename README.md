@@ -29,7 +29,7 @@ This repository contains ESPHome configurations for an ESP32-S3 based voice assi
   - LRC: `GPIO1`
   - BCLK: `GPIO2`
   - DIN: `GPIO42`
-  - GAIN: `GND`
+  - GAIN: `none` (`GND` for more volume, but that can break)
   - SD: `3.3V` (through 210 kΩ resistor!!!)
   - Vin: `5V`
   - GND: `GND`
