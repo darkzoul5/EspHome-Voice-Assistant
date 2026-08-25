@@ -519,17 +519,17 @@ light:
               }
             }
             if ( id(master_mute_switch).state ) {
-              it[2] = Color::BLACK;
-              it[3] = muted_color;
-              it[4] = Color::BLACK;
+              it[1] = Color::BLACK;
+              it[2] = muted_color;
+              it[3] = Color::BLACK;
               it[5] = Color::BLACK;
               it[6] = muted_color;
               it[7] = Color::BLACK;
             }
             if ( id(external_media_player).volume == 0.0f || id(external_media_player).is_muted() ) {
+              it[3] = Color::BLACK;
+              it[4] = muted_color;
               it[5] = Color::BLACK;
-              it[6] = muted_color;
-              it[7] = Color::BLACK;
             }
       - addressable_lambda:
           name: "Voice kit startup failed"
