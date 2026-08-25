@@ -538,7 +538,7 @@ light:
             static int8_t index = 0;
             Color fail_color(255, 0, 0);
             for (uint8_t i = 0; i < 8; i++) {
-              if (i % 3) {
+              if (i % 2) {
                 it[i] = Color::BLACK;
               } else {
                 it[i] = fail_color;
