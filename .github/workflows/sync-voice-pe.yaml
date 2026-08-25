@@ -1,0 +1,45 @@
+name: Sync Home Assistant Voice PE
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check upstream file
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/esphome/home-assistant-voice-pe/dev/home-assistant-voice.yaml \
+            -o /tmp/official-voice-pe.yaml
+
+          if cmp -s /tmp/official-voice-pe.yaml official-voice-pe.yaml; then
+            echo "No upstream changes."
+            exit 0
+          fi
+
+          cp /tmp/official-voice-pe.yaml official-voice-pe.yaml
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add official-voice-pe.yaml
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update Official Home Assistant Voice PE"
+          git push
