@@ -1,0 +1,764 @@
+substitutions:
+  # Phases of the Voice AssistantGPIO8
+  # IDLE: The voice assistant is ready to be triggered by a wake-word
+  voice_assist_idle_phase_id: '1'
+  # LISTENING: The voice assistant is ready to listen to a voice command (after being triggered by the wake word)
+  voice_assist_listening_phase_id: '2'
+  # THINKING: The voice assistant is currently processing the command
+  voice_assist_thinking_phase_id: '3'
+  # REPLYING: The voice assistant is replying to the command
+  voice_assist_replying_phase_id: '6'
+  # NOT_READY: The voice assistant is not ready
+  voice_assist_not_ready_phase_id: '10'
+  # ERROR: The voice assistant encountered an error
+  voice_assist_error_phase_id: '11'
+  # MUTED: The voice assistant is muted and will not reply to a wake-word
+  voice_assist_muted_phase_id: '12'
+
+esphome:
+  name: esp32-voice-assistant
+  friendly_name: ESP32 Voice Assistant
+
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  cpu_frequency: 240MHZ
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+
+      # Moves instructions and read only data from flash into PSRAM on boot.
+      # Both enabled allows instructions to execute while a flash operation is in progress without needing to be placed in IRAM.
+      # Considerably speeds up mWW at the cost of using more PSRAM.
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
+      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"  # TLS1.3 support isn't enabled by default in IDF 5.1.5
+
+# Enable logging
+logger:
+  baud_rate: 0
+  logs:
+    sensor: WARN
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+  actions:
+    - action: start_va
+      then:
+        - voice_assistant.start
+    - action: stop_va
+      then:
+        - voice_assistant.stop
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid_1
+  password: !secret wifi_password_1
+  min_auth_mode: WPA2
+  fast_connect: true
+
+mdns:
+
+psram:
+  mode: octal
+  speed: 80MHz
+  ignore_not_found: false
+
+i2s_audio:
+  - id: i2s_input
+    i2s_lrclk_pin: GPIO39 #WS For Mic
+    i2s_bclk_pin: GPIO38 #SCK For Mic
+
+  - id: i2s_output
+    i2s_lrclk_pin: GPIO1 #LRC For Amp
+    i2s_bclk_pin: GPIO2 #BCLK For Amp
+
+microphone:
+  - platform: i2s_audio
+    id: mic_id
+    adc_type: external
+    i2s_din_pin: GPIO40 #SD For Mic
+    channel: left
+    i2s_audio_id: i2s_input
+    bits_per_sample: 32bit
+    pdm: false
+    sample_rate: 16000
+
+speaker:
+  - platform: i2s_audio
+    id: speaker_id
+    i2s_audio_id: i2s_output
+    dac_type: external
+    i2s_dout_pin: GPIO42 #DIN For MAX98357A Amp
+    sample_rate: 48000
+    bits_per_sample: 32bit
+    buffer_duration: 100ms
+    channel: stereo
+
+  - platform: mixer
+    id: mixer_speaker_id
+    output_speaker: speaker_id
+    source_speakers:
+      - id: announcement_spk_mixer_input
+      - id: media_spk_mixer_input
+
+  - platform: resampler
+    id: media_spk_resampling_input
+    output_speaker: media_spk_mixer_input
+  - platform: resampler
+    id: announcement_spk_resampling_input
+    output_speaker: announcement_spk_mixer_input
+
+media_player:
+  - platform: speaker
+    name: media_player
+    id: speaker_media_player_id
+    volume_max: "0.9"
+    media_pipeline:
+        speaker: media_spk_resampling_input
+        num_channels: 2
+    announcement_pipeline:
+        speaker: announcement_spk_resampling_input
+        num_channels: 1
+    on_announcement:
+      - mixer_speaker.apply_ducking:
+          id: media_spk_mixer_input
+          decibel_reduction: 24
+          duration: 0.25s
+
+    on_state:
+      - delay: 0.7s
+      -  if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+          then:
+            - mixer_speaker.apply_ducking:
+                id: media_spk_mixer_input
+                decibel_reduction: 0
+                duration: 1s
+
+    files:
+      - id: alarm_sound
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+      - id: wake_word_triggered_sound
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac
+      - id: mute_switch_on
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_on.flac
+      - id: mute_switch_off
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_off.flac
+
+
+
+voice_assistant:
+  id: va
+  microphone: mic_id
+  micro_wake_word: mww
+  media_player: speaker_media_player_id
+  noise_suppression_level: 0
+
+  # When the voice assistant connects to HA:
+  # Set init_in_progress to false (Initialization is over).
+  # If the switch is on, start the voice assistant
+  on_client_connected:
+    - lambda: id(init_in_progress) = false;
+    - if:
+        condition:
+          switch.is_on: voice_enabled
+        then:
+          - micro_wake_word.start
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+        else:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+
+  # When the voice assistant disconnects to HA:
+  # Stop the voice assistant
+  on_client_disconnected:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+    - micro_wake_word.stop
+    # Ensure any ducking applied to media mixers is disabled when client disconnects
+    - mixer_speaker.apply_ducking:
+        id: media_spk_mixer_input
+        decibel_reduction: 0
+        duration: 0.5s
+
+  on_listening:
+    # Reset flags
+    - lambda: |-
+        id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+        id(is_tts_active) = false;
+        id(question_flag) = false;
+    # Microphone operation indicator (onboard led)
+    - light.turn_on:
+        id: led_ww
+        red: 0%
+        green: 100%
+        blue: 0%
+        brightness: 40%
+    - light.turn_on:
+        id: led_ring
+        red: 0%
+        green: 100%
+        blue: 0%
+        brightness: 40%
+    # Waiting for speech for 4 seconds, otherwise exit
+    - script.execute: listening_timeout
+
+  on_intent_start:
+    then:
+      - light.turn_on:
+          id: led_ww
+          red: 0%
+          green: 0%
+          blue: 100%
+          brightness: 40%
+          effect: Slow Pulse
+      - light.turn_on:
+          id: led_ring
+          brightness: 40%
+          red: 0%
+          green: 0%
+          blue: 100%
+          effect: Rotate
+      - script.execute: start_ring_rotation
+
+  on_intent_end:
+    - light.turn_off: led_ww
+    - light.turn_off: led_ring
+
+
+  on_stt_vad_start:
+    # Turn off the script if speech is detected
+    - script.stop: listening_timeout
+
+  on_stt_vad_end:
+    - light.turn_on:
+        id: led_ww
+        red: 0%
+        green: 0%
+        blue: 100%
+        brightness: 40%
+        effect: Slow Pulse
+    - script.execute: start_ring_rotation
+    - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+
+  on_stt_end:
+  # Event for HA with recognized speech
+  - homeassistant.event:
+      event: esphome.stt_text
+      data:
+        text: !lambda return x;
+
+  on_tts_start:
+    - light.turn_on:
+        id: led_ww
+        red: 30%
+        green: 30%
+        blue: 70%
+        brightness: 40%
+        effect: Fast Pulse
+    - light.turn_on:
+        id: led_ring
+        red: 30%
+        green: 30%
+        blue: 70%
+        brightness: 40%
+        effect: Fast Pulse
+
+    - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+    - script.execute: activate_stop_word_once
+    # Finding a question mark at the end of a sentence.
+    - lambda: |-
+        bool is_question = false;
+        if (!x.empty() && x.back() == '?') {
+          is_question = true;
+        }
+        id(question_flag) = is_question;
+#    - logger.log:
+#        format: "question_flag: %d (0=false, 1=true)"
+#        args:
+#          - id(question_flag)
+
+  on_tts_end:
+    # Set the flag when the stage is reached
+    - lambda: |-
+        id(is_tts_active) = true;
+    - script.execute: stop_ring_rotation
+    # Defensive: ensure any announcement ducking is removed after TTS finishes
+    - mixer_speaker.apply_ducking:
+        id: media_spk_mixer_input
+        decibel_reduction: 0
+        duration: 0.5s
+
+  on_timer_finished:
+    then:
+      - switch.turn_on: timer_ringing
+
+  on_end:
+    # Additional check for microphone LED
+    - if:
+        condition:
+          - light.is_on: led_ww
+        then:
+          - light.turn_off: led_ww
+          - light.turn_off: led_ring
+
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+
+    - wait_until:
+        not:
+          voice_assistant.is_running:
+    - delay: 0.5s
+
+    # New start of the pipeline if the conditions are met
+    - if:
+        condition:
+          and:
+            - lambda: 'return !id(question_flag);'
+            - lambda: 'return id(is_tts_active);'
+        then:
+          - voice_assistant.start:
+        else:
+          # Stop ducking audio.
+          - mixer_speaker.apply_ducking:
+              id: media_spk_mixer_input
+              decibel_reduction: 0
+              duration: 1.0s
+
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+
+  # When the voice assistant encounters an error:
+  # Wait 1 second and set the correct phase (idle or muted depending on the state of the switch)
+  on_error:
+    - if:
+        condition:
+          lambda: return !id(init_in_progress);
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+          - delay: 1s
+          - if:
+              condition:
+                switch.is_on: voice_enabled
+              then:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              else:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+          # Ensure ducking is cleared on errors so audio isn't left ducked
+          - mixer_speaker.apply_ducking:
+              id: media_spk_mixer_input
+              decibel_reduction: 0
+              duration: 0.5s
+
+micro_wake_word:
+  id: mww
+  models:
+    - model: alexa
+      id: alexa
+    - model: okay_nabu
+      id: okay_nabu
+    - model: hey_mycroft
+      id: hey_mycroft
+    - model: hey_jarvis
+      id: hey_jarvis
+    - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
+      id: stop
+      internal: true
+  vad:
+  microphone: mic_id
+  stop_after_detection: false
+  on_wake_word_detected:
+    - if:
+        condition:
+          switch.is_on: timer_ringing
+        then:
+          - switch.turn_off: timer_ringing
+        else:
+          - if:
+              condition:
+                switch.is_on: voice_enabled
+              then:
+                - if:
+                    condition:
+                      voice_assistant.is_running:
+                    then:
+                      voice_assistant.stop:
+                    # Stop any other media player announcement
+                    else:
+                      - if:
+                          condition:
+                            media_player.is_announcing:
+                          then:
+                            - media_player.stop:
+                                announcement: true
+                          # Start the voice assistant and play the wake sound, if enabled
+                          else:
+                            - media_player.speaker.play_on_device_media_file:
+                                media_file: wake_word_triggered_sound
+                                announcement: true
+                            - delay: 300ms
+                            - voice_assistant.start:
+                                wake_word: !lambda return wake_word;
+
+
+globals:
+  # Global initialisation variable. Initialized to true and set to false once everything is connected. Only used to have a smooth "plugging" experience
+  - id: init_in_progress
+    type: bool
+    restore_value: no
+    initial_value: 'true'
+  # Global variable tracking the phase of the voice assistant (defined above). Initialized to not_ready
+  - id: voice_assistant_phase
+    type: int
+    restore_value: no
+    initial_value: ${voice_assist_not_ready_phase_id}
+  # Variable for tracking TTS triggering
+  - id: is_tts_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # Variable for tracking built-in continued conversations
+  - id: question_flag
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+button:
+  - platform: restart
+    name: reboot
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: led_ww
+    channel_colors: GRB
+    pin: GPIO48
+    num_leds: 1
+    rmt_symbols: 96
+    chipset: ws2812
+    name: "OnBoard Light"
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 100ms
+          update_interval: 100ms
+          min_brightness: 50%
+          max_brightness: 100%
+
+  - platform: esp32_rmt_led_strip
+    id: led_ring
+    channel_colors: GRB
+    pin: GPIO47
+    num_leds: 8
+    rmt_symbols: 96
+    chipset: ws2812
+    name: "LED Ring"
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 100ms
+          update_interval: 100ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - addressable_color_wipe:
+          name: Rotate
+          add_led_interval: 50ms
+          colors:
+            - num_leds: 3
+              red: 0.5
+              green: 0.5
+              blue: 0
+              gradient: true
+            - num_leds: 5
+              red: 0
+              green: 0
+              blue: 0
+              gradient: false
+
+      - addressable_color_wipe:
+          name: Rotate Slow
+          add_led_interval: 150ms
+          colors:
+            - num_leds: 3
+              red: 1
+              green: 1
+              blue: 1
+              gradient: true
+            - num_leds: 5
+              red: 0
+              green: 0
+              blue: 0
+              gradient: false
+
+      - addressable_color_wipe:
+          name: Rotate Medium
+          add_led_interval: 100ms
+          colors:
+            - num_leds: 3
+              red: 1
+              green: 1
+              blue: 1
+              gradient: true
+            - num_leds: 5
+              red: 0
+              green: 0
+              blue: 0
+              gradient: false
+
+      - addressable_color_wipe:
+          name: Rotate Fast
+          add_led_interval: 50ms
+          colors:
+            - num_leds: 3
+              red: 1
+              green: 1
+              blue: 1
+              gradient: true
+            - num_leds: 5
+              red: 0
+              green: 0
+              blue: 0
+              gradient: false
+
+
+
+script:
+  - id: listening_timeout
+    mode: restart
+    then:
+      - delay: 4s
+      - if:
+          condition:
+            lambda: |-
+              return id(voice_assistant_phase) == 2;
+          then:
+            - light.turn_off: led_ww
+            - voice_assistant.stop:
+            # Ensure ducking is disabled when we time out listening
+            - mixer_speaker.apply_ducking:
+                id: media_spk_mixer_input
+                decibel_reduction: 0
+                duration: 0.5s
+
+            - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+  - id: activate_stop_word_once
+    then:
+      - delay: 1s
+      # Enable stop wake word
+      - if:
+          condition:
+            switch.is_off: timer_ringing
+          then:
+            - micro_wake_word.enable_model: stop
+            - wait_until:
+                not:
+                  media_player.is_announcing:
+            - if:
+                condition:
+                  switch.is_off: timer_ringing
+                then:
+                  - micro_wake_word.disable_model: stop
+  - id: start_ring_rotation
+    then:
+      - light.turn_on:
+          id: led_ring
+          effect: Rotate
+          brightness: 60%
+
+  - id: stop_ring_rotation
+    then:
+      - light.turn_off: led_ring
+binary_sensor:
+  - platform: gpio
+    id: center_button
+    pin:
+      number: GPIO21
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 20ms
+    on_click:
+      then:
+        - switch.toggle: voice_enabled
+
+
+sensor:
+  - platform: uptime
+    # The uptime sensor to know if device is rebooting when it shouldn't be.
+    name: "Uptime"
+    update_interval: 60s
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  #- platform: sound_level
+    #microphone:
+      #microphone: mic_id
+      #channels:
+        #- 0
+    #passive: true
+    #peak:
+      #name: "Mic Peak Ch 0"
+
+select:
+  - platform: template
+    name: "Wake word sensitivity"
+    id: wake_word_sensitivity
+    optimistic: true
+    initial_option: Slightly sensitive
+    restore_value: true
+    entity_category: config
+    options:
+      - Slightly sensitive
+      - Moderately sensitive
+      - Very sensitive
+    on_value:
+      # Sets specific wake word probabilities computed for each particular model
+      # Note probability cutoffs are set as a quantized uint8 value, each comment has the corresponding floating point cutoff
+      # False Accepts per Hour values are tested against all units and channels from the Dinner Party Corpus.
+      # These cutoffs apply only to the specific models included in the firmware: okay_nabu@20241226.3, hey_jarvis@v2, hey_mycroft@v2
+      lambda: |-
+        if (x == "Slightly sensitive") {
+          id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH on DipCo (Manifest's default)
+          id(hey_jarvis).set_probability_cutoff(247);   // 0.97 -> 0.563 FAPH on DipCo (Manifest's default)
+          id(hey_mycroft).set_probability_cutoff(253);  // 0.99 -> 0.567 FAPH on DipCo
+          id(alexa).set_probability_cutoff(217);        //
+        } else if (x == "Moderately sensitive") {
+          id(okay_nabu).set_probability_cutoff(176);    // 0.69 -> 0.376 FAPH on DipCo
+          id(hey_jarvis).set_probability_cutoff(235);   // 0.92 -> 0.939 FAPH on DipCo
+          id(hey_mycroft).set_probability_cutoff(242);  // 0.95 -> 1.502 FAPH on DipCo (Manifest's default)
+          id(alexa).set_probability_cutoff(176);        //
+        } else if (x == "Very sensitive") {
+          id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
+          id(hey_jarvis).set_probability_cutoff(212);   // 0.83 -> 1.502 FAPH on DipCo
+          id(hey_mycroft).set_probability_cutoff(237);  // 0.93 -> 1.878 FAPH on DipCo
+          id(alexa).set_probability_cutoff(143);        //
+        }
+
+switch:
+  - platform: template
+    name: Enable Voice Assistant
+    id: voice_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: mdi:assistant
+    # When the switch is turned on (on Home Assistant):
+    # Start the voice assistant component
+    on_turn_on:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+            - if:
+                condition:
+                  not:
+                    - voice_assistant.is_running
+                then:
+                  - micro_wake_word.start
+                  - media_player.speaker.play_on_device_media_file:
+                      media_file: mute_switch_off
+                      announcement: true
+                  - light.turn_off:
+                      id: led_ww
+                  - light.turn_off:
+                      id: led_ring
+
+    # When the switch is turned off (on Home Assistant):
+    # Stop the voice assistant component
+    on_turn_off:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - voice_assistant.stop
+            - micro_wake_word.stop
+            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+            # Ensure ducking is disabled when the voice assistant is turned off
+            - mixer_speaker.apply_ducking:
+                id: media_spk_mixer_input
+                decibel_reduction: 0
+                duration: 0.5s
+            - media_player.speaker.play_on_device_media_file:
+                media_file: mute_switch_on
+                announcement: true
+            - light.turn_on:
+                id: led_ww
+                red: 100%
+                green: 0%
+                blue: 0%
+                brightness: 30%
+            - light.turn_on:
+                id: led_ring
+                red: 100%
+                green: 0%
+                blue: 0%
+                brightness: 30%
+
+
+  - platform: template
+    name: "Ring Timer"
+    id: timer_ringing
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    on_turn_off:
+      # Stop playing the alarm
+      - media_player.stop:
+          announcement: true
+      # Ensure ducking is disabled when timer/alarm is stopped
+      - mixer_speaker.apply_ducking:
+          id: media_spk_mixer_input
+          decibel_reduction: 0
+          duration: 0.5s
+    on_turn_on:
+      then:
+        - while:
+            condition:
+              switch.is_on: timer_ringing
+            then:
+              - media_player.speaker.play_on_device_media_file:
+                  media_file: alarm_sound
+                  announcement: true
+              - wait_until:
+                  condition:
+                    media_player.is_announcing:
+              - wait_until:
+                  condition:
+                    not:
+                      media_player.is_announcing:
+              - delay: 1000ms
+
+
