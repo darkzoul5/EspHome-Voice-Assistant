@@ -86,7 +86,7 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: !secret api_key
+    key: !secret encryption-key
   id: api_id
   on_client_connected:
     - script.execute: control_leds
@@ -96,7 +96,7 @@ api:
 ota:
   - platform: esphome
     id: ota_esphome
-    password: !secret ota_password
+    encryption:
 
 mdns:
 
