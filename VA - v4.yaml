@@ -86,7 +86,7 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: !secret encryption-key
+    key: !secret esp32_voice_assistant__encryption-key
   id: api_id
   on_client_connected:
     - script.execute: control_leds
