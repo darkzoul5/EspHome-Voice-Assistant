@@ -5,11 +5,11 @@ on:
     branches:
       - main
     paths:
-      - "VA - v4.yaml"
+      - "VA-v4.yaml"
       - ".github/workflows/esphome-build.yaml"
   pull_request:
     paths:
-      - "VA - v4.yaml"
+      - "VA-v4.yaml"
       - ".github/workflows/esphome-build.yaml"
   workflow_dispatch:
 
@@ -37,7 +37,7 @@ jobs:
       - name: Build firmware
         uses: esphome/build-action@v8.1.0
         with:
-          yaml-file: "VA - v4.yaml"
+          yaml-file: "VA-v4.yaml"
           version: latest
 
       - name: Upload firmware
