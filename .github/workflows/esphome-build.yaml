@@ -1,0 +1,51 @@
+name: ESPHome Build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "VA - v4.yaml"
+      - ".github/workflows/esphome-build.yaml"
+  pull_request:
+    paths:
+      - "VA - v4.yaml"
+      - ".github/workflows/esphome-build.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build VA - v4
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Create CI secrets
+        run: |
+          cat > secrets.yaml <<EOF
+          esp32_voice_assistant__encryption-key: "$(openssl rand -base64 32)"
+          ota_password: "ci-test-password"
+          wifi_ssid_1: "ci-test"
+          wifi_password_1: "ci-test-password"
+          EOF
+
+      - name: Build firmware
+        uses: esphome/build-action@v8.1.0
+        with:
+          yaml-file: "VA - v4.yaml"
+          version: latest
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: esphome-va-v4
+          path: |
+            **/*.bin
+            **/*.elf
+            **/manifest.json
+          if-no-files-found: error
