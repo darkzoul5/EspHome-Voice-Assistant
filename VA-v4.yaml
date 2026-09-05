@@ -96,7 +96,7 @@ api:
 ota:
   - platform: esphome
     id: ota_esphome
-    password: !secret ota_password
+    encryption:
 
 mdns:
 
