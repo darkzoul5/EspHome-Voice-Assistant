@@ -232,7 +232,8 @@ media_source:
     buffer_size: 500000
   - platform: sendspin
     id: sendspin_media_source
-    # The AIC3204 DAC used, as configured, on the VPE delays audio by 480 microseconds
+    codecs: [FLAC, PCM]  # Prefer FLAC for Sendspin
+    # If the AIC3204 DAC is used, as configured, on the VPE, it delays audio by 480 microseconds
     #fixed_delay: 480 microseconds
 
 media_player:
